@@ -31,30 +31,58 @@ mkdir -p "$PB/tests"
 while read -r branch; do
     tar="$PB/tests/$branch.tar.gz"
     [ -f "$tar" ] || curl -fsSL -o "$tar" "$BASE_URL/$branch.tar.gz"
-    dir="$PB/run/$branch"
-    rm -rf "$dir" && mkdir -p "$dir"
+    # The extra "workspace" path segment matters: a few suites assert that
+    # paths printed by the tool contain the substring "workspace".
+    dir="$PB/run/$branch/workspace"
+    rm -rf "$PB/run/$branch" && mkdir -p "$dir"
+    # Seed the run dir with the project's tracked files, then overlay the test
+    # tarball — in the real ProgramBench eval the tests run inside the
+    # submission's own tree, and some suites read project files (testdata/,
+    # docs, ...) that the tarball does not ship.
+    git ls-files -z | tar --null -cf - -T - | tar -xpf - -C "$dir"
     tar xzf "$tar" -C "$dir"
     cp executable "$dir/executable" && chmod +x "$dir/executable"
-    # Some branches hardcode the container's /workspace path; make run.sh
-    # relocatable. Also use signal-based timeouts (as programbench eval does)
-    # so a timing-out test fails cleanly instead of killing the pytest worker.
-    sed -i.bak -e 's|cd /workspace|cd "$(dirname "$0")/.."|' \
-        -e 's/--timeout-method=thread/--timeout-method=signal/g' \
-        "$dir/eval/run.sh" && rm -f "$dir/eval/run.sh.bak"
+    # The suites were authored in containers whose workspace root is
+    # /workspace, and some tests/goldens embed that absolute path. Rewrite it
+    # to this run dir in every text file so path-sensitive assertions hold.
+    # Also use signal-based timeouts (as programbench eval does) so a
+    # timing-out test fails cleanly instead of killing the pytest worker.
+    grep -rlI --null -- /workspace "$dir" | xargs -0 sed -i.pbbak "s|/workspace|$PWD/$dir|g" || true
+    find "$dir" -name '*.pbbak' -delete
+    # Some run.sh scripts install the binary into /usr/local/bin so PATH-based
+    # invocations (git hooks, ...) can find it; redirect that into a run-local
+    # bin dir on PATH instead of requiring root.
+    bindir="$PWD/$PB/run/$branch/bin"
+    mkdir -p "$bindir"
+    sed -i.pbbak -e 's/--timeout-method=thread/--timeout-method=signal/g' \
+        -e "s|/usr/local/bin|$bindir|g" "$dir/eval/run.sh" \
+        && rm -f "$dir/eval/run.sh.pbbak"
     echo "=== branch $branch ==="
-    (cd "$dir" && bash eval/run.sh > run.log 2>&1 || true)
+    (cd "$dir" && PATH="$bindir:$PATH" bash eval/run.sh > run.log 2>&1 || true)
 done < "$PB/branches.txt"
 
 python3 - <<'EOF'
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-ignored = set(Path(".programbench/ignored_tests.txt").read_text().split())
+def read_list(path: Path) -> set:
+    if not path.exists():
+        return set()
+    return {l for l in map(str.strip, path.read_text().splitlines()) if l and not l.startswith("#")}
+
+
+# ignored_tests.txt comes from ProgramBench (tests unreliable on the gold
+# binary); local_ignored_tests.txt is course-side, for tests that are
+# environment-sensitive outside the benchmark containers (each entry carries
+# a comment explaining why).
+ignored = read_list(Path(".programbench/ignored_tests.txt")) | read_list(
+    Path(".programbench/local_ignored_tests.txt")
+)
 total = passed = dropped = 0
 for branch in Path(".programbench/branches.txt").read_text().split():
-    xml = Path(f".programbench/run/{branch}/eval/results.xml")
+    xml = Path(f".programbench/run/{branch}/workspace/eval/results.xml")
     if not xml.exists():
-        print(f"{branch}: NO RESULTS (see .programbench/run/{branch}/run.log)")
+        print(f"{branch}: NO RESULTS (see .programbench/run/{branch}/workspace/run.log)")
         continue
     n = ok = skip = 0
     for case in ET.fromstring(xml.read_text()).iter("testcase"):

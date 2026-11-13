@@ -17,36 +17,44 @@ type MapItem struct {
 }
 
 func (m MapSlice) Merge(in MapSlice) MapSlice {
+	if len(m) == 0 {
+		return in
+	}
 	t := make(map[interface{}]struct{}, len(in))
 	for _, item := range in {
 		t[item.Key] = struct{}{}
 	}
-	var out MapSlice
+	out := m[:0]
 	for _, item := range m {
 		if _, ok := t[item.Key]; !ok {
 			out = append(out, item)
 		}
 	}
-	for _, item := range in {
-		out = append(out, item)
-	}
-	return out
+	return append(out, in...)
 }
 
 var MapSliceEscapeHTML = false
+
+func encodeJSONValue(v interface{}) ([]byte, error) {
+	buf := &bytes.Buffer{}
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(MapSliceEscapeHTML)
+	if err := enc.Encode(&v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
 
 func (m MapSlice) MarshalJSON() ([]byte, error) {
 	buf := &bytes.Buffer{}
 	buf.Write([]byte{'{'})
 	for i, item := range m {
-		ibuf := &bytes.Buffer{}
-		enc := json.NewEncoder(ibuf)
-		enc.SetEscapeHTML(MapSliceEscapeHTML)
-		if err := enc.Encode(&item.Val); err != nil {
+		val, err := encodeJSONValue(item.Val)
+		if err != nil {
 			return nil, err
 		}
 		buf.WriteString(fmt.Sprintf("%q:", fmt.Sprint(item.Key)))
-		buf.Write(ibuf.Bytes())
+		buf.Write(val)
 		if i < len(m)-1 {
 			buf.Write([]byte{','})
 		}
@@ -75,23 +83,34 @@ func (m MapSlice) MarshalYAML() (interface{}, error) {
 	return &node, nil
 }
 
-func (m MapSlice) Struct() (interface{}, error) {
+func structFields(m MapSlice) ([]reflect.StructField, error) {
 	fields := make([]reflect.StructField, 0, len(m))
-
 	for i, item := range m {
 		key, ok := item.Key.(string)
 		if !ok {
 			return nil, fmt.Errorf("non-string key: %#v", item.Key)
 		}
-		typ := reflect.TypeOf(item.Val)
-		if typ == nil {
-			typ = reflect.TypeOf((*interface{})(nil)).Elem()
-		}
 		fields = append(fields, reflect.StructField{
 			Name: alphaIndex(uint64(i)),
-			Type: typ,
+			Type: itemType(item.Val),
 			Tag:  reflect.StructTag("toml:" + strconv.Quote(key)),
 		})
+	}
+	return fields, nil
+}
+
+func itemType(v interface{}) reflect.Type {
+	typ := reflect.TypeOf(v)
+	if typ == nil {
+		typ = reflect.TypeOf((*interface{})(nil)).Elem()
+	}
+	return typ
+}
+
+func (m MapSlice) Struct() (interface{}, error) {
+	fields, err := structFields(m)
+	if err != nil {
+		return nil, err
 	}
 	v := reflect.New(reflect.StructOf(fields)).Elem()
 	for i, item := range m {

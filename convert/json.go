@@ -33,6 +33,15 @@ func (j JSON) Encode(w io.Writer, in interface{}) error {
 	return encoder.Encode(in)
 }
 
+func jsonError(src []byte) error {
+	var null interface{}
+	err := json.Unmarshal(src, &null)
+	if err == nil {
+		err = errors.New("invalid JSON")
+	}
+	return err
+}
+
 // TODO: implement streaming version
 func (JSON) Decode(r io.Reader) (interface{}, error) {
 	out, err := ioutil.ReadAll(r)
@@ -40,12 +49,7 @@ func (JSON) Decode(r io.Reader) (interface{}, error) {
 		return nil, err
 	}
 	if !json.Valid(out) {
-		var null interface{}
-		err := json.Unmarshal(out, &null)
-		if err == nil {
-			err = errors.New("invalid JSON")
-		}
-		return nil, err
+		return nil, jsonError(out)
 	}
 	return (YAML{}).Decode(bytes.NewReader(out))
 }

@@ -18,10 +18,6 @@ func (TOML) String() string {
 }
 
 func (t TOML) Encode(w io.Writer, in interface{}) error {
-	tomlEnc := gotoml.NewEncoder(w)
-	if !t.Indent {
-		tomlEnc.Indent = ""
-	}
 	enc := toml.Encoder{
 		NaN:    t.NaN(),
 		PosInf: t.PosInf(),
@@ -30,6 +26,10 @@ func (t TOML) Encode(w io.Writer, in interface{}) error {
 	out, err := enc.Encode(in)
 	if err != nil {
 		return err
+	}
+	tomlEnc := gotoml.NewEncoder(w)
+	if !t.Indent {
+		tomlEnc.Indent = ""
 	}
 	return tomlEnc.Encode(out)
 }

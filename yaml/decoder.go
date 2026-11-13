@@ -50,10 +50,16 @@ func (d *Decoder) Decode(node *goyaml.Node) (normal interface{}, err error) {
 type decodeTracker struct {
 	*Decoder
 	aliases     map[*goyaml.Node]struct{}
+	aliasMemo   map[*goyaml.Node]aliasResult
 	doc         *goyaml.Node
 	decodeCount int
 	aliasCount  int
 	aliasDepth  int
+}
+
+type aliasResult struct {
+	val interface{}
+	n   int
 }
 
 func (d *decodeTracker) normalize(n *goyaml.Node) interface{} {
@@ -61,9 +67,7 @@ func (d *decodeTracker) normalize(n *goyaml.Node) interface{} {
 	if d.aliasDepth > 0 {
 		d.aliasCount++
 	}
-	if d.aliasCount > 100 && d.decodeCount > 1000 && float64(d.aliasCount)/float64(d.decodeCount) > allowedAliasRatio(d.decodeCount) {
-		panic(fmt.Errorf("document contains excessive aliasing"))
-	}
+	d.checkAliasRatio()
 
 	switch n.Kind {
 	case goyaml.DocumentNode:
@@ -154,6 +158,12 @@ func allowedAliasRatio(decodeCount int) float64 {
 	}
 }
 
+func (d *decodeTracker) checkAliasRatio() {
+	if d.aliasCount > 100 && d.decodeCount > 1000 && float64(d.aliasCount)/float64(d.decodeCount) > allowedAliasRatio(d.decodeCount) {
+		panic(fmt.Errorf("document contains excessive aliasing"))
+	}
+}
+
 func (d *decodeTracker) document(n *goyaml.Node) interface{} {
 	if len(n.Content) != 1 {
 		panic(fmt.Errorf("invalid document"))
@@ -163,6 +173,12 @@ func (d *decodeTracker) document(n *goyaml.Node) interface{} {
 }
 
 func (d *decodeTracker) alias(n *goyaml.Node) interface{} {
+	if r, ok := d.aliasMemo[n.Alias]; ok {
+		d.decodeCount += r.n
+		d.aliasCount += r.n
+		d.checkAliasRatio()
+		return r.val
+	}
 	if d.aliases == nil {
 		d.aliases = make(map[*goyaml.Node]struct{})
 	}
@@ -172,9 +188,16 @@ func (d *decodeTracker) alias(n *goyaml.Node) interface{} {
 	}
 	d.aliases[n] = struct{}{}
 	d.aliasDepth++
+	before := d.decodeCount
 	out := d.normalize(n.Alias)
 	d.aliasDepth--
 	delete(d.aliases, n)
+	if n.Alias != nil {
+		if d.aliasMemo == nil {
+			d.aliasMemo = make(map[*goyaml.Node]aliasResult)
+		}
+		d.aliasMemo[n.Alias] = aliasResult{val: out, n: d.decodeCount - before}
+	}
 	return out
 }
 
@@ -215,35 +238,38 @@ func (d *decodeTracker) mapping(n *goyaml.Node) order.MapSlice {
 	return out
 }
 
-func (d *decodeTracker) merge(m order.MapSlice, n *goyaml.Node) order.MapSlice {
+func mergeCheck(n *goyaml.Node) {
 	switch n.Kind {
 	case goyaml.AliasNode:
 		if n.Alias != nil && n.Alias.Kind != goyaml.MappingNode {
 			panic(ErrNotMaps)
 		}
+	case goyaml.MappingNode:
+	default:
+		panic(ErrNotMaps)
+	}
+}
+
+func (d *decodeTracker) normalizeMergeMap(n *goyaml.Node) order.MapSlice {
+	in, ok := d.normalize(n).(order.MapSlice)
+	if !ok {
+		panic(ErrNotMaps)
+	}
+	return in
+}
+
+func (d *decodeTracker) merge(m order.MapSlice, n *goyaml.Node) order.MapSlice {
+	switch n.Kind {
+	case goyaml.AliasNode:
+		mergeCheck(n)
 		fallthrough
 	case goyaml.MappingNode:
-		in, ok := d.normalize(n).(order.MapSlice)
-		if !ok {
-			panic(ErrNotMaps)
-		}
-		return m.Merge(in)
+		return m.Merge(d.normalizeMergeMap(n))
 	case goyaml.SequenceNode:
 		// Step backwards as earlier nodes take precedence.
 		for i := len(n.Content) - 1; i >= 0; i-- {
-			ni := n.Content[i]
-			if ni.Kind == goyaml.AliasNode {
-				if ni.Alias != nil && ni.Alias.Kind != goyaml.MappingNode {
-					panic(ErrNotMaps)
-				}
-			} else if ni.Kind != goyaml.MappingNode {
-				panic(ErrNotMaps)
-			}
-			in, ok := d.normalize(n).(order.MapSlice)
-			if !ok {
-				panic(ErrNotMaps)
-			}
-			m = m.Merge(in)
+			mergeCheck(n.Content[i])
+			m = m.Merge(d.normalizeMergeMap(n))
 		}
 		return m
 	default:

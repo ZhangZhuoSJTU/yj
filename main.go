@@ -43,11 +43,15 @@ func main() {
 	os.Exit(Run(os.Stdin, os.Stdout, os.Stderr, os.Args))
 }
 
+func usage(stderr io.Writer, err error) {
+	fmt.Fprintf(stderr, HelpMsg, os.Args[0])
+	fmt.Fprintf(stderr, "Error: %s\n", err)
+}
+
 func Run(stdin io.Reader, stdout, stderr io.Writer, osArgs []string) (code int) {
 	config, err := Parse(osArgs[1:]...)
 	if err != nil {
-		fmt.Fprintf(stderr, HelpMsg, os.Args[0])
-		fmt.Fprintf(stderr, "Error: %s\n", err)
+		usage(stderr, err)
 		return 1
 	}
 	if config.Help {

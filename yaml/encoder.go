@@ -95,14 +95,18 @@ func (e *Encoder) key(in string) interface{} {
 			key = v
 		}
 	}
-	kenc := *e
-	kenc.NaN = e.KeyNaN
-	kenc.PosInf = e.KeyPosInf
-	kenc.NegInf = e.KeyNegInf
-	switch out := kenc.denormalize(key); reflect.ValueOf(out).Kind() {
+	switch out := e.forKeys().denormalize(key); reflect.ValueOf(out).Kind() {
 	case reflect.Map, reflect.Slice, reflect.Func:
 		return &out
 	default:
 		return out
 	}
+}
+
+func (e *Encoder) forKeys() *Encoder {
+	kenc := *e
+	kenc.NaN = e.KeyNaN
+	kenc.PosInf = e.KeyPosInf
+	kenc.NegInf = e.KeyNegInf
+	return &kenc
 }

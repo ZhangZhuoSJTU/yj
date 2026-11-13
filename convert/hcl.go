@@ -19,15 +19,23 @@ func (HCL) String() string {
 }
 
 func (HCL) Encode(w io.Writer, in interface{}) error {
-	j := &bytes.Buffer{}
-	if err := (JSON{}).Encode(j, in); err != nil {
+	j, err := toJSON(in)
+	if err != nil {
 		return err
 	}
-	f, err := hcljson.Parse(j.Bytes())
+	f, err := hcljson.Parse(j)
 	if err != nil {
 		return err
 	}
 	return printer.Fprint(w, f)
+}
+
+func toJSON(in interface{}) ([]byte, error) {
+	j := &bytes.Buffer{}
+	if err := (JSON{}).Encode(j, in); err != nil {
+		return nil, err
+	}
+	return j.Bytes(), nil
 }
 
 func (HCL) Decode(r io.Reader) (interface{}, error) {
